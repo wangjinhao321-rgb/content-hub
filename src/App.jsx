@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback } from "react";
 const SUPABASE_URL = "https://dfamerkhelwopkqvgmle.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRmYW1lcmtoZWx3b3BrcXZnbWxlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwNjcyODksImV4cCI6MjA5NDY0MzI4OX0.vkbDzKbIdBBzcnRJVn639032MckArlIFCWG4Oju7T3M";
 
-const WP_SITE = "YOUR_WORDPRESS_SITE"; // 后续替换
+const WP_SITE = "YOUR_WORDPRESS_SITE";
 const WP_USER = "YOUR_WP_USERNAME";
 const WP_APP_PASSWORD = "YOUR_WP_APP_PASSWORD";
 
@@ -57,14 +57,14 @@ function markdownToHtml(md) {
 }
 
 const STATUS_MAP = {
-  pending: { label: "\u5f85\u5ba1\u6838", color: "#BA7517", bg: "#FAEEDA" },
-  approved: { label: "\u5df2\u901a\u8fc7", color: "#0F6E56", bg: "#E1F5EE" },
-  rejected: { label: "\u5df2\u62d2\u7edd", color: "#A32D2D", bg: "#FCEBEB" },
+  pending: { label: "待审核", color: "#BA7517", bg: "#FAEEDA" },
+  approved: { label: "已通过", color: "#0F6E56", bg: "#E1F5EE" },
+  rejected: { label: "已拒绝", color: "#A32D2D", bg: "#FCEBEB" },
 };
 
 const TYPE_MAP = {
-  wechat: { label: "\u516c\u4f17\u53f7", icon: "\u2709" },
-  blog: { label: "\u535a\u5ba2", icon: "\u270d" },
+  wechat: { label: "公众号", icon: "✉" },
+  blog: { label: "博客", icon: "✍" },
 };
 
 export default function App() {
@@ -99,7 +99,7 @@ export default function App() {
       const data = await supaFetch(path);
       setContents(data || []);
     } catch (e) {
-      showToast("\u52a0\u8f7d\u5931\u8d25: " + e.message, "error");
+      showToast("加载失败: " + e.message, "error");
     }
     setLoading(false);
   }, [filter]);
@@ -109,7 +109,7 @@ export default function App() {
       const data = await supaFetch("bid_leads?order=created_at.desc&limit=50");
       setLeads(data || []);
     } catch (e) {
-      showToast("\u52a0\u8f7d\u62db\u6807\u4fe1\u606f\u5931\u8d25", "error");
+      showToast("加载招标信息失败", "error");
     }
   }, []);
 
@@ -141,14 +141,14 @@ export default function App() {
       });
       showToast(
         item.content_type === "blog" && wpId
-          ? "\u5df2\u901a\u8fc7\u5e76\u53d1\u5e03\u5230 WordPress!"
-          : "\u5df2\u901a\u8fc7!"
+          ? "已通过并发布到 WordPress!"
+          : "已通过!"
       );
       setSelected(null);
       setReviewNote("");
       fetchContents();
     } catch (e) {
-      showToast("\u64cd\u4f5c\u5931\u8d25: " + e.message, "error");
+      showToast("操作失败: " + e.message, "error");
     }
     setPublishing(false);
   };
@@ -163,18 +163,18 @@ export default function App() {
           updated_at: new Date().toISOString(),
         }),
       });
-      showToast("\u5df2\u62d2\u7edd");
+      showToast("已拒绝");
       setSelected(null);
       setReviewNote("");
       fetchContents();
     } catch (e) {
-      showToast("\u64cd\u4f5c\u5931\u8d25: " + e.message, "error");
+      showToast("操作失败: " + e.message, "error");
     }
   };
 
   const handleAddContent = async () => {
     if (!newContent.title || !newContent.body) {
-      showToast("\u6807\u9898\u548c\u6b63\u6587\u4e0d\u80fd\u4e3a\u7a7a", "error");
+      showToast("标题和正文不能为空", "error");
       return;
     }
     try {
@@ -185,17 +185,17 @@ export default function App() {
           review_status: "pending",
         }),
       });
-      showToast("\u5185\u5bb9\u5df2\u6dfb\u52a0\uff0c\u7b49\u5f85\u5ba1\u6838");
+      showToast("内容已添加，等待审核");
       setAddMode(false);
       setNewContent({ content_type: "blog", title: "", body: "", summary: "", tags: "" });
       fetchContents();
     } catch (e) {
-      showToast("\u6dfb\u52a0\u5931\u8d25: " + e.message, "error");
+      showToast("添加失败: " + e.message, "error");
     }
   };
 
   const copyToClipboard = (text) => {
-    navigator.clipboard.writeText(text).then(() => showToast("\u5df2\u590d\u5236\u5230\u526a\u8d34\u677f"));
+    navigator.clipboard.writeText(text).then(() => showToast("已复制到剪贴板"));
   };
 
   return (
@@ -269,9 +269,9 @@ export default function App() {
           </div>
           <div>
             <h1 style={{ margin: 0, fontSize: 18, fontWeight: 600, color: "#2C2C2A", letterSpacing: -0.3 }}>
-              \u5185\u5bb9\u7ba1\u7406\u4e2d\u5fc3
+              内容管理中心
             </h1>
-            <p style={{ margin: 0, fontSize: 12, color: "#888780" }}>\u6e29\u5ea6\u8bb0\u5f55\u4eea \u00b7 \u62db\u6295\u6807\u5185\u5bb9\u751f\u4ea7</p>
+            <p style={{ margin: 0, fontSize: 12, color: "#888780" }}>温度记录仪 · 招投标内容生产</p>
           </div>
         </div>
         <button
@@ -287,7 +287,7 @@ export default function App() {
             cursor: "pointer",
           }}
         >
-          + \u6dfb\u52a0\u5185\u5bb9
+          + 添加内容
         </button>
       </header>
 
@@ -295,8 +295,8 @@ export default function App() {
       <div style={{ padding: "0 32px", background: "#fff", borderBottom: "1px solid #ECEAE3" }}>
         <div style={{ display: "flex", gap: 0 }}>
           {[
-            { key: "contents", label: "\u5185\u5bb9\u5e93" },
-            { key: "leads", label: "\u62db\u6807\u7ebf\u7d22" },
+            { key: "contents", label: "内容库" },
+            { key: "leads", label: "招标线索" },
           ].map((t) => (
             <button
               key={t.key}
@@ -331,7 +331,7 @@ export default function App() {
               animation: "fadeIn 0.3s ease",
             }}
           >
-            <h3 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 500 }}>\u6dfb\u52a0\u65b0\u5185\u5bb9</h3>
+            <h3 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 500 }}>添加新内容</h3>
             <div style={{ display: "flex", gap: 12, marginBottom: 12 }}>
               {["blog", "wechat"].map((t) => (
                 <button
@@ -352,7 +352,7 @@ export default function App() {
               ))}
             </div>
             <input
-              placeholder="\u6587\u7ae0\u6807\u9898"
+              placeholder="文章标题"
               value={newContent.title}
               onChange={(e) => setNewContent({ ...newContent, title: e.target.value })}
               style={{
@@ -366,7 +366,7 @@ export default function App() {
               }}
             />
             <textarea
-              placeholder="\u6587\u7ae0\u6b63\u6587\uff08\u652f\u6301 Markdown\uff09"
+              placeholder="文章正文（支持 Markdown）"
               value={newContent.body}
               onChange={(e) => setNewContent({ ...newContent, body: e.target.value })}
               rows={8}
@@ -383,7 +383,7 @@ export default function App() {
               }}
             />
             <input
-              placeholder="\u6807\u7b7e\uff08\u9017\u53f7\u5206\u9694\uff0c\u5982\uff1a\u51b7\u94fe,\u533b\u836f,\u62db\u6807\uff09"
+              placeholder="标签（逗号分隔，如：冷链,医药,招标）"
               value={newContent.tags}
               onChange={(e) => setNewContent({ ...newContent, tags: e.target.value })}
               style={{
@@ -410,7 +410,7 @@ export default function App() {
                   cursor: "pointer",
                 }}
               >
-                \u63d0\u4ea4
+                提交
               </button>
               <button
                 onClick={() => setAddMode(false)}
@@ -423,7 +423,7 @@ export default function App() {
                   cursor: "pointer",
                 }}
               >
-                \u53d6\u6d88
+                取消
               </button>
             </div>
           </div>
@@ -434,10 +434,10 @@ export default function App() {
             {/* Filters */}
             <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
               {[
-                { key: "all", label: "\u5168\u90e8" },
-                { key: "pending", label: "\u5f85\u5ba1\u6838" },
-                { key: "approved", label: "\u5df2\u901a\u8fc7" },
-                { key: "rejected", label: "\u5df2\u62d2\u7edd" },
+                { key: "all", label: "全部" },
+                { key: "pending", label: "待审核" },
+                { key: "approved", label: "已通过" },
+                { key: "rejected", label: "已拒绝" },
               ].map((f) => (
                 <button
                   key={f.key}
@@ -460,7 +460,7 @@ export default function App() {
 
             {/* Content list */}
             {loading ? (
-              <p style={{ textAlign: "center", color: "#888780", padding: 40 }}>\u52a0\u8f7d\u4e2d...</p>
+              <p style={{ textAlign: "center", color: "#888780", padding: 40 }}>加载中...</p>
             ) : contents.length === 0 ? (
               <div
                 style={{
@@ -472,8 +472,8 @@ export default function App() {
                   border: "1px solid #ECEAE3",
                 }}
               >
-                <p style={{ fontSize: 16, marginBottom: 8 }}>\u8fd8\u6ca1\u6709\u5185\u5bb9</p>
-                <p style={{ fontSize: 13 }}>\u70b9\u51fb\u53f3\u4e0a\u89d2\u201c\u6dfb\u52a0\u5185\u5bb9\u201d\u5f00\u59cb\u521b\u5efa</p>
+                <p style={{ fontSize: 16, marginBottom: 8 }}>还没有内容</p>
+                <p style={{ fontSize: 13 }}>点击右上角"添加内容"开始创建</p>
               </div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -542,7 +542,7 @@ export default function App() {
                           </h3>
                           {item.bid_leads && (
                             <p style={{ margin: 0, fontSize: 12, color: "#888780" }}>
-                              {item.bid_leads.buyer} \u00b7 {item.bid_leads.region}
+                              {item.bid_leads.buyer} · {item.bid_leads.region}
                             </p>
                           )}
                         </div>
@@ -589,7 +589,7 @@ export default function App() {
                   border: "1px solid #ECEAE3",
                 }}
               >
-                <p style={{ fontSize: 16 }}>\u6682\u65e0\u62db\u6807\u7ebf\u7d22</p>
+                <p style={{ fontSize: 16 }}>暂无招标线索</p>
               </div>
             ) : (
               leads.map((lead, i) => (
@@ -607,10 +607,10 @@ export default function App() {
                     {lead.title}
                   </h3>
                   <div style={{ display: "flex", gap: 16, fontSize: 13, color: "#888780", flexWrap: "wrap" }}>
-                    {lead.buyer && <span>\u91c7\u8d2d\u65b9: {lead.buyer}</span>}
-                    {lead.region && <span>\u5730\u533a: {lead.region}</span>}
-                    {lead.budget && <span>\u9884\u7b97: {lead.budget}\u4e07</span>}
-                    {lead.deadline && <span>\u622a\u6b62: {lead.deadline}</span>}
+                    {lead.buyer && <span>采购方: {lead.buyer}</span>}
+                    {lead.region && <span>地区: {lead.region}</span>}
+                    {lead.budget && <span>预算: {lead.budget}万</span>}
+                    {lead.deadline && <span>截止: {lead.deadline}</span>}
                   </div>
                 </div>
               ))
@@ -648,7 +648,7 @@ export default function App() {
             }}
           >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-              <h2 style={{ margin: 0, fontSize: 18, fontWeight: 500 }}>\u5185\u5bb9\u8be6\u60c5</h2>
+              <h2 style={{ margin: 0, fontSize: 18, fontWeight: 500 }}>内容详情</h2>
               <button
                 onClick={() => {
                   setSelected(null);
@@ -662,7 +662,7 @@ export default function App() {
                   color: "#888780",
                 }}
               >
-                \u2715
+                ✕
               </button>
             </div>
 
@@ -712,7 +712,7 @@ export default function App() {
                   gap: 6,
                 }}
               >
-                \ud83d\udccb \u590d\u5236\u6b63\u6587\u5230\u526a\u8d34\u677f
+                📋 复制正文到剪贴板
               </button>
             )}
 
@@ -742,12 +742,12 @@ export default function App() {
                 }}
               >
                 <label style={{ fontSize: 13, color: "#888780", display: "block", marginBottom: 8 }}>
-                  \u5ba1\u6838\u5907\u6ce8\uff08\u53ef\u9009\uff09
+                  审核备注（可选）
                 </label>
                 <textarea
                   value={reviewNote}
                   onChange={(e) => setReviewNote(e.target.value)}
-                  placeholder="\u8f93\u5165\u5907\u6ce8..."
+                  placeholder="输入备注..."
                   rows={3}
                   style={{
                     width: "100%",
@@ -777,7 +777,7 @@ export default function App() {
                       opacity: publishing ? 0.7 : 1,
                     }}
                   >
-                    {publishing ? "\u53d1\u5e03\u4e2d..." : selected.content_type === "blog" ? "\u2713 \u901a\u8fc7\u5e76\u53d1\u5e03\u5230WP" : "\u2713 \u901a\u8fc7"}
+                    {publishing ? "发布中..." : selected.content_type === "blog" ? "✓ 通过并发布到WP" : "✓ 通过"}
                   </button>
                   <button
                     onClick={() => handleReject(selected)}
@@ -792,7 +792,7 @@ export default function App() {
                       cursor: "pointer",
                     }}
                   >
-                    \u2717 \u62d2\u7edd
+                    ✗ 拒绝
                   </button>
                 </div>
               </div>
