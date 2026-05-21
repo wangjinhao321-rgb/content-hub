@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 const SUPABASE_URL = "https://dfamerkhelwopkqvgmle.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRmYW1lcmtoZWx3b3BrcXZnbWxlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwNjcyODksImV4cCI6MjA5NDY0MzI4OX0.vkbDzKbIdBBzcnRJVn639032MckArlIFCWG4Oju7T3M";
+const STORAGE_BUCKET = "content-images";
 const WP_SITE = "YOUR_WORDPRESS_SITE";
 const WP_USER = "YOUR_WP_USERNAME";
 const WP_APP_PASSWORD = "YOUR_WP_APP_PASSWORD";
@@ -26,6 +27,8 @@ const i18n = {
     toastRejected: "已驳回", toastCopied: "已复制", toastTitleBodyReq: "标题和正文不能为空",
     toastLoadFail: "加载失败", toastLeadFail: "加载线索失败", toastAddFail: "提交失败", toastOpFail: "操作失败",
     statusLabel: "状态", langLabel: "语言",
+    uploadImg: "插入图片", uploading: "上传中...", uploadHint: "点击或拖拽图片到此处", uploadSuccess: "图片已插入",
+    preview: "预览", edit: "编辑",
   },
   en: {
     siteTitle: "Content Hub", siteDesc: "Temperature Logger · Bid Content Management",
@@ -46,6 +49,8 @@ const i18n = {
     toastRejected: "Rejected", toastCopied: "Copied", toastTitleBodyReq: "Title and body required",
     toastLoadFail: "Load failed", toastLeadFail: "Failed to load leads", toastAddFail: "Submit failed", toastOpFail: "Failed",
     statusLabel: "Status", langLabel: "Language",
+    uploadImg: "Insert Image", uploading: "Uploading...", uploadHint: "Click or drag image here", uploadSuccess: "Image inserted",
+    preview: "Preview", edit: "Edit",
   },
 };
 
@@ -59,6 +64,22 @@ async function supaFetch(path, options = {}) {
   return text ? JSON.parse(text) : null;
 }
 
+async function uploadImage(file) {
+  const ext = file.name.split(".").pop();
+  const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${STORAGE_BUCKET}/${fileName}`, {
+    method: "POST",
+    headers: {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${SUPABASE_KEY}`,
+      "Content-Type": file.type,
+    },
+    body: file,
+  });
+  if (!res.ok) throw new Error("Upload failed");
+  return `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${fileName}`;
+}
+
 async function publishToWordPress(title, body) {
   if (WP_SITE === "YOUR_WORDPRESS_SITE") return null;
   const res = await fetch(`${WP_SITE}/wp-json/wp/v2/posts`, {
@@ -67,6 +88,20 @@ async function publishToWordPress(title, body) {
   });
   if (!res.ok) throw new Error("WP failed");
   return await res.json();
+}
+
+// Render markdown with images
+function renderBody(text) {
+  if (!text) return "";
+  return text
+    .replace(/^### (.+)$/gm, '<h3 style="font-size:15px;font-weight:600;margin:18px 0 8px;color:#1C1917">$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2 style="font-size:16px;font-weight:600;margin:20px 0 10px;color:#1C1917">$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1 style="font-size:18px;font-weight:600;margin:24px 0 12px;color:#1C1917">$1</h1>')
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.+?)\*/g, "<em>$1</em>")
+    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" style="max-width:100%;border-radius:8px;margin:12px 0;" />')
+    .replace(/\n\n/g, '<div style="height:12px"></div>')
+    .replace(/\n/g, "<br/>");
 }
 
 export default function App() {
@@ -85,6 +120,11 @@ export default function App() {
   const [leads, setLeads] = useState([]);
   const [addMode, setAddMode] = useState(false);
   const [newContent, setNewContent] = useState({ content_type: "blog", title: "", body: "", summary: "", tags: "", lang: "zh" });
+  const [uploading, setUploading] = useState(false);
+  const [previewMode, setPreviewMode] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef(null);
+  const textareaRef = useRef(null);
 
   const showToast = (msg, type = "success") => { setToast({ msg, type }); setTimeout(() => setToast(null), 2500); };
 
@@ -130,74 +170,88 @@ export default function App() {
     if (!newContent.title || !newContent.body) { showToast(t.toastTitleBodyReq, "error"); return; }
     try {
       await supaFetch("contents", { method: "POST", body: JSON.stringify({ ...newContent, review_status: "pending" }) });
-      showToast(t.toastAdded); setAddMode(false); setNewContent({ content_type: "blog", title: "", body: "", summary: "", tags: "", lang: "zh" }); fetchContents();
+      showToast(t.toastAdded); setAddMode(false); setPreviewMode(false);
+      setNewContent({ content_type: "blog", title: "", body: "", summary: "", tags: "", lang: "zh" }); fetchContents();
     } catch (e) { showToast(t.toastAddFail, "error"); }
   };
+
+  const handleImageUpload = async (file) => {
+    if (!file || !file.type.startsWith("image/")) return;
+    setUploading(true);
+    try {
+      const url = await uploadImage(file);
+      const md = `![${file.name}](${url})`;
+      const ta = textareaRef.current;
+      if (ta) {
+        const start = ta.selectionStart;
+        const before = newContent.body.slice(0, start);
+        const after = newContent.body.slice(ta.selectionEnd);
+        const newBody = before + (before && !before.endsWith("\n") ? "\n" : "") + md + "\n" + after;
+        setNewContent({ ...newContent, body: newBody });
+      } else {
+        setNewContent({ ...newContent, body: newContent.body + "\n" + md + "\n" });
+      }
+      showToast(t.uploadSuccess);
+    } catch (e) { showToast(e.message, "error"); }
+    setUploading(false);
+  };
+
+  const handleDrop = (e) => { e.preventDefault(); setDragOver(false); const file = e.dataTransfer.files[0]; if (file) handleImageUpload(file); };
+  const handlePaste = (e) => { const items = e.clipboardData?.items; if (!items) return; for (const item of items) { if (item.type.startsWith("image/")) { e.preventDefault(); handleImageUpload(item.getAsFile()); break; } } };
 
   const copyToClipboard = (txt) => { navigator.clipboard.writeText(txt).then(() => showToast(t.toastCopied)); };
   const fmtDate = (d) => { const dt = new Date(d); return `${dt.getMonth()+1}/${dt.getDate()}`; };
 
   const statusStyle = { pending: { bg: "#FFF8EB", color: "#A16207", dot: "#FACC15" }, approved: { bg: "#ECFDF5", color: "#047857", dot: "#34D399" }, rejected: { bg: "#FEF2F2", color: "#B91C1C", dot: "#F87171" } };
   const langStyle = { zh: { label: "中", bg: "#FEF3C7", color: "#92400E" }, en: { label: "EN", bg: "#DBEAFE", color: "#1E40AF" }, bi: { label: "BI", bg: "#EDE9FE", color: "#5B21B6" } };
-
   const pendingCount = contents.filter(c => c.review_status === "pending").length;
   const approvedCount = contents.filter(c => c.review_status === "approved").length;
 
   return (
     <div style={{ minHeight: "100vh", background: "#F8F7F4" }}>
       <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Noto+Sans+SC:wght@300;400;500;600&display=swap" rel="stylesheet" />
-
       <style>{`
-        * { box-sizing: border-box; }
-        body { margin: 0; }
-        @keyframes toast-in { from { transform: translateY(-12px) scale(0.95); opacity: 0 } to { transform: translateY(0) scale(1); opacity: 1 } }
-        @keyframes fade-up { from { opacity: 0; transform: translateY(12px) } to { opacity: 1; transform: translateY(0) } }
-        @keyframes slide-in { from { transform: translateX(100%) } to { transform: translateX(0) } }
-        @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .6 } }
-        .item { transition: all 0.15s ease; border: 1.5px solid transparent; }
-        .item:hover { border-color: #D6D3C8; transform: translateY(-1px); box-shadow: 0 4px 20px rgba(0,0,0,0.04); }
-        .btn { transition: all 0.15s ease; }
-        .btn:hover { transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
-        .btn:active { transform: translateY(0); }
-        textarea:focus, input:focus { outline: none; border-color: #A3A096 !important; }
-        .chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 100px; font-size: 11px; font-weight: 500; letter-spacing: 0.02em; white-space: nowrap; }
+        *{box-sizing:border-box}body{margin:0}
+        @keyframes toast-in{from{transform:translateY(-12px) scale(.95);opacity:0}to{transform:translateY(0) scale(1);opacity:1}}
+        @keyframes fade-up{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes slide-in{from{transform:translateX(100%)}to{transform:translateX(0)}}
+        @keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
+        .item{transition:all .15s ease;border:1.5px solid transparent}.item:hover{border-color:#D6D3C8;transform:translateY(-1px);box-shadow:0 4px 20px rgba(0,0,0,.04)}
+        .btn{transition:all .15s ease}.btn:hover{transform:translateY(-1px);box-shadow:0 2px 8px rgba(0,0,0,.08)}.btn:active{transform:translateY(0)}
+        textarea:focus,input:focus{outline:none;border-color:#A3A096!important}
+        .chip{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:100px;font-size:11px;font-weight:500;letter-spacing:.02em;white-space:nowrap}
+        .drop-zone{border:2px dashed #D6D3C8;border-radius:10px;padding:16px;text-align:center;cursor:pointer;transition:all .15s ease}
+        .drop-zone:hover,.drop-zone.active{border-color:#34D399;background:#ECFDF5}
       `}</style>
 
-      {/* Toast */}
       {toast && (
         <div style={{ position: "fixed", top: 24, left: "50%", transform: "translateX(-50%)", zIndex: 999, animation: "toast-in 0.25s ease" }}>
-          <div style={{ padding: "10px 20px", borderRadius: 100, fontSize: 13, fontWeight: 500, fontFamily: "'Outfit', 'Noto Sans SC', sans-serif",
-            background: toast.type === "error" ? "#1C1917" : "#1C1917", color: "#fff",
-            boxShadow: "0 8px 32px rgba(0,0,0,0.16)", display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ padding: "10px 20px", borderRadius: 100, fontSize: 13, fontWeight: 500, fontFamily: "'Outfit','Noto Sans SC',sans-serif",
+            background: "#1C1917", color: "#fff", boxShadow: "0 8px 32px rgba(0,0,0,.16)", display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ width: 6, height: 6, borderRadius: "50%", background: toast.type === "error" ? "#F87171" : "#34D399" }} />
             {toast.msg}
           </div>
         </div>
       )}
 
-      {/* Sidebar + Main layout */}
       <div style={{ display: "flex", minHeight: "100vh" }}>
-
         {/* Sidebar */}
         <nav style={{ width: 220, background: "#1C1917", color: "#fff", padding: "28px 0", display: "flex", flexDirection: "column", flexShrink: 0 }}>
-          {/* Logo */}
           <div style={{ padding: "0 24px", marginBottom: 32 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <div style={{ width: 32, height: 32, borderRadius: 8, background: "linear-gradient(135deg, #34D399, #059669)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 700, fontFamily: "'Outfit'" }}>T</div>
+              <div style={{ width: 32, height: 32, borderRadius: 8, background: "linear-gradient(135deg,#34D399,#059669)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 700, fontFamily: "'Outfit'" }}>T</div>
               <div>
-                <div style={{ fontSize: 15, fontWeight: 600, fontFamily: "'Outfit', sans-serif", letterSpacing: -0.3 }}>{t.siteTitle}</div>
-                <div style={{ fontSize: 10, color: "#A8A29E", fontFamily: "'Outfit', 'Noto Sans SC'", letterSpacing: 0.3 }}>{t.siteDesc}</div>
+                <div style={{ fontSize: 15, fontWeight: 600, fontFamily: "'Outfit',sans-serif", letterSpacing: -0.3 }}>{t.siteTitle}</div>
+                <div style={{ fontSize: 10, color: "#A8A29E", fontFamily: "'Outfit','Noto Sans SC'", letterSpacing: 0.3 }}>{t.siteDesc}</div>
               </div>
             </div>
           </div>
-
-          {/* Nav items */}
           <div style={{ flex: 1 }}>
             {[{ key: "contents", label: t.tabContents, icon: "M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2" },
               { key: "leads", label: t.tabLeads, icon: "M13 10V3L4 14h7v7l9-11h-7z" }].map((n) => (
               <button key={n.key} onClick={() => setTab(n.key)} style={{
-                width: "100%", padding: "10px 24px", border: "none", background: tab === n.key ? "rgba(255,255,255,0.08)" : "transparent",
-                color: tab === n.key ? "#fff" : "#A8A29E", fontSize: 13, fontWeight: 500, fontFamily: "'Outfit', 'Noto Sans SC', sans-serif",
+                width: "100%", padding: "10px 24px", border: "none", background: tab === n.key ? "rgba(255,255,255,.08)" : "transparent",
+                color: tab === n.key ? "#fff" : "#A8A29E", fontSize: 13, fontWeight: 500, fontFamily: "'Outfit','Noto Sans SC',sans-serif",
                 cursor: "pointer", display: "flex", alignItems: "center", gap: 10, textAlign: "left",
                 borderLeft: tab === n.key ? "2px solid #34D399" : "2px solid transparent",
               }}>
@@ -206,37 +260,31 @@ export default function App() {
               </button>
             ))}
           </div>
-
-          {/* Language switch at bottom */}
           <div style={{ padding: "0 24px" }}>
-            <div style={{ display: "flex", background: "rgba(255,255,255,0.06)", borderRadius: 8, padding: 3 }}>
+            <div style={{ display: "flex", background: "rgba(255,255,255,.06)", borderRadius: 8, padding: 3 }}>
               {["zh", "en"].map((l) => (
                 <button key={l} onClick={() => setLang(l)} style={{
                   flex: 1, padding: "6px 0", border: "none", borderRadius: 6, fontSize: 12, fontWeight: 500, cursor: "pointer",
-                  fontFamily: "'Outfit', sans-serif",
-                  background: lang === l ? "rgba(255,255,255,0.12)" : "transparent",
-                  color: lang === l ? "#fff" : "#78716C",
+                  fontFamily: "'Outfit',sans-serif", background: lang === l ? "rgba(255,255,255,.12)" : "transparent", color: lang === l ? "#fff" : "#78716C",
                 }}>{l === "zh" ? "中文" : "English"}</button>
               ))}
             </div>
           </div>
         </nav>
 
-        {/* Main content */}
-        <main style={{ flex: 1, padding: "28px 36px", fontFamily: "'Outfit', 'Noto Sans SC', sans-serif", overflow: "auto" }}>
-
-          {/* Top bar */}
+        {/* Main */}
+        <main style={{ flex: 1, padding: "28px 36px", fontFamily: "'Outfit','Noto Sans SC',sans-serif", overflow: "auto" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 28 }}>
             <div>
-              <h1 style={{ margin: 0, fontSize: 22, fontWeight: 600, color: "#1C1917", letterSpacing: -0.5, fontFamily: "'Outfit', 'Noto Sans SC'" }}>{tab === "contents" ? t.tabContents : t.tabLeads}</h1>
+              <h1 style={{ margin: 0, fontSize: 22, fontWeight: 600, color: "#1C1917", letterSpacing: -0.5 }}>{tab === "contents" ? t.tabContents : t.tabLeads}</h1>
               {tab === "contents" && <p style={{ margin: "4px 0 0", fontSize: 13, color: "#A8A29E" }}>
                 {pendingCount > 0 ? `${pendingCount} ${t.filterPending}` : ""}{pendingCount > 0 && approvedCount > 0 ? " · " : ""}{approvedCount > 0 ? `${approvedCount} ${t.filterApproved}` : ""}
               </p>}
             </div>
             {tab === "contents" && (
-              <button className="btn" onClick={() => setAddMode(true)} style={{
+              <button className="btn" onClick={() => { setAddMode(true); setPreviewMode(false); }} style={{
                 padding: "9px 20px", borderRadius: 10, border: "none", cursor: "pointer",
-                background: "#1C1917", color: "#fff", fontSize: 13, fontWeight: 500, fontFamily: "'Outfit', 'Noto Sans SC'",
+                background: "#1C1917", color: "#fff", fontSize: 13, fontWeight: 500,
                 display: "flex", alignItems: "center", gap: 6,
               }}>
                 <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
@@ -254,10 +302,8 @@ export default function App() {
                   {[{ key: "all", label: t.filterAll }, { key: "pending", label: t.filterPending }, { key: "approved", label: t.filterApproved }, { key: "rejected", label: t.filterRejected }].map((f) => (
                     <button key={f.key} onClick={() => setFilter(f.key)} style={{
                       padding: "5px 12px", border: "none", borderRadius: 6, fontSize: 12, fontWeight: 500, cursor: "pointer",
-                      fontFamily: "'Outfit', 'Noto Sans SC'",
-                      background: filter === f.key ? "#fff" : "transparent",
-                      color: filter === f.key ? "#1C1917" : "#78716C",
-                      boxShadow: filter === f.key ? "0 1px 3px rgba(0,0,0,0.06)" : "none",
+                      fontFamily: "'Outfit','Noto Sans SC'", background: filter === f.key ? "#fff" : "transparent",
+                      color: filter === f.key ? "#1C1917" : "#78716C", boxShadow: filter === f.key ? "0 1px 3px rgba(0,0,0,.06)" : "none",
                     }}>{f.label}</button>
                   ))}
                 </div>
@@ -268,10 +314,8 @@ export default function App() {
                   {[{ key: "all", label: t.langAll }, { key: "zh", label: t.langZh }, { key: "en", label: t.langEn }, { key: "bi", label: t.langBi }].map((f) => (
                     <button key={f.key} onClick={() => setLangFilter(f.key)} style={{
                       padding: "5px 12px", border: "none", borderRadius: 6, fontSize: 12, fontWeight: 500, cursor: "pointer",
-                      fontFamily: "'Outfit', 'Noto Sans SC'",
-                      background: langFilter === f.key ? "#fff" : "transparent",
-                      color: langFilter === f.key ? "#1C1917" : "#78716C",
-                      boxShadow: langFilter === f.key ? "0 1px 3px rgba(0,0,0,0.06)" : "none",
+                      fontFamily: "'Outfit','Noto Sans SC'", background: langFilter === f.key ? "#fff" : "transparent",
+                      color: langFilter === f.key ? "#1C1917" : "#78716C", boxShadow: langFilter === f.key ? "0 1px 3px rgba(0,0,0,.06)" : "none",
                     }}>{f.label}</button>
                   ))}
                 </div>
@@ -279,17 +323,17 @@ export default function App() {
             </div>
           )}
 
-          {/* Add content panel */}
+          {/* Add content modal */}
           {addMode && (
-            <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.4)", backdropFilter: "blur(4px)" }}
-              onClick={(e) => { if (e.target === e.currentTarget) setAddMode(false); }}>
-              <div style={{ width: 560, maxWidth: "92vw", maxHeight: "88vh", overflow: "auto", background: "#fff", borderRadius: 16, padding: 32, animation: "fade-up 0.25s ease", boxShadow: "0 24px 64px rgba(0,0,0,0.12)" }}>
+            <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,.4)", backdropFilter: "blur(4px)" }}
+              onClick={(e) => { if (e.target === e.currentTarget) { setAddMode(false); setPreviewMode(false); } }}>
+              <div style={{ width: 640, maxWidth: "92vw", maxHeight: "90vh", overflow: "auto", background: "#fff", borderRadius: 16, padding: 32, animation: "fade-up 0.25s ease", boxShadow: "0 24px 64px rgba(0,0,0,.12)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
-                  <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600, fontFamily: "'Outfit', 'Noto Sans SC'" }}>{t.addTitle}</h2>
-                  <button onClick={() => setAddMode(false)} style={{ border: "none", background: "#F5F4F0", width: 32, height: 32, borderRadius: 8, cursor: "pointer", fontSize: 16, color: "#78716C", display: "flex", alignItems: "center", justifyContent: "center" }}>✕</button>
+                  <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>{t.addTitle}</h2>
+                  <button onClick={() => { setAddMode(false); setPreviewMode(false); }} style={{ border: "none", background: "#F5F4F0", width: 32, height: 32, borderRadius: 8, cursor: "pointer", fontSize: 16, color: "#78716C", display: "flex", alignItems: "center", justifyContent: "center" }}>✕</button>
                 </div>
 
-                {/* Type + Lang row */}
+                {/* Type + Lang */}
                 <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
                   <div style={{ flex: 1 }}>
                     <label style={{ fontSize: 11, fontWeight: 600, color: "#A8A29E", textTransform: "uppercase", letterSpacing: 0.5, display: "block", marginBottom: 6 }}>{t.contentType}</label>
@@ -297,7 +341,6 @@ export default function App() {
                       {[{ k: "blog", l: t.typeBlog }, { k: "wechat", l: t.typeWechat }].map((tp) => (
                         <button key={tp.k} onClick={() => setNewContent({ ...newContent, content_type: tp.k })} className="btn" style={{
                           padding: "7px 16px", borderRadius: 8, fontSize: 13, fontWeight: 500, cursor: "pointer",
-                          fontFamily: "'Outfit', 'Noto Sans SC'",
                           border: newContent.content_type === tp.k ? "1.5px solid #1C1917" : "1.5px solid #E7E5E4",
                           background: newContent.content_type === tp.k ? "#1C1917" : "#fff",
                           color: newContent.content_type === tp.k ? "#fff" : "#57534E",
@@ -311,10 +354,8 @@ export default function App() {
                       {[{ k: "zh", l: "中文", bg: "#FEF3C7", c: "#92400E", bc: "#F59E0B" }, { k: "en", l: "EN", bg: "#DBEAFE", c: "#1E40AF", bc: "#3B82F6" }, { k: "bi", l: lang === "zh" ? "双语" : "BI", bg: "#EDE9FE", c: "#5B21B6", bc: "#8B5CF6" }].map((l) => (
                         <button key={l.k} onClick={() => setNewContent({ ...newContent, lang: l.k })} className="btn" style={{
                           padding: "7px 16px", borderRadius: 8, fontSize: 13, fontWeight: 500, cursor: "pointer",
-                          fontFamily: "'Outfit', 'Noto Sans SC'",
                           border: newContent.lang === l.k ? `1.5px solid ${l.bc}` : "1.5px solid #E7E5E4",
-                          background: newContent.lang === l.k ? l.bg : "#fff",
-                          color: newContent.lang === l.k ? l.c : "#57534E",
+                          background: newContent.lang === l.k ? l.bg : "#fff", color: newContent.lang === l.k ? l.c : "#57534E",
                         }}>{l.l}</button>
                       ))}
                     </div>
@@ -322,15 +363,64 @@ export default function App() {
                 </div>
 
                 <input placeholder={t.phTitle} value={newContent.title} onChange={(e) => setNewContent({ ...newContent, title: e.target.value })}
-                  style={{ width: "100%", padding: "12px 16px", borderRadius: 10, border: "1.5px solid #E7E5E4", fontSize: 15, fontWeight: 500, marginBottom: 12, fontFamily: "'Outfit', 'Noto Sans SC'", color: "#1C1917" }} />
-                <textarea placeholder={t.phBody} value={newContent.body} onChange={(e) => setNewContent({ ...newContent, body: e.target.value })} rows={10}
-                  style={{ width: "100%", padding: "12px 16px", borderRadius: 10, border: "1.5px solid #E7E5E4", fontSize: 14, marginBottom: 12, resize: "vertical", fontFamily: "'Outfit', 'Noto Sans SC'", lineHeight: 1.7, color: "#1C1917" }} />
+                  style={{ width: "100%", padding: "12px 16px", borderRadius: 10, border: "1.5px solid #E7E5E4", fontSize: 15, fontWeight: 500, marginBottom: 12, fontFamily: "'Outfit','Noto Sans SC'", color: "#1C1917" }} />
+
+                {/* Toolbar */}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <input type="file" ref={fileInputRef} accept="image/*" style={{ display: "none" }} onChange={(e) => { if (e.target.files[0]) handleImageUpload(e.target.files[0]); e.target.value = ""; }} />
+                    <button onClick={() => fileInputRef.current?.click()} disabled={uploading} className="btn" style={{
+                      padding: "5px 12px", borderRadius: 6, border: "1px solid #E7E5E4", background: "#fff", fontSize: 12, fontWeight: 500, cursor: uploading ? "wait" : "pointer",
+                      display: "flex", alignItems: "center", gap: 5, color: "#57534E", fontFamily: "'Outfit','Noto Sans SC'",
+                    }}>
+                      <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+                      {uploading ? t.uploading : t.uploadImg}
+                    </button>
+                  </div>
+                  <div style={{ display: "flex", background: "#ECEAE3", borderRadius: 6, padding: 2 }}>
+                    <button onClick={() => setPreviewMode(false)} style={{
+                      padding: "4px 12px", border: "none", borderRadius: 4, fontSize: 11, fontWeight: 500, cursor: "pointer",
+                      background: !previewMode ? "#fff" : "transparent", color: !previewMode ? "#1C1917" : "#78716C",
+                      boxShadow: !previewMode ? "0 1px 2px rgba(0,0,0,.06)" : "none",
+                    }}>{t.edit}</button>
+                    <button onClick={() => setPreviewMode(true)} style={{
+                      padding: "4px 12px", border: "none", borderRadius: 4, fontSize: 11, fontWeight: 500, cursor: "pointer",
+                      background: previewMode ? "#fff" : "transparent", color: previewMode ? "#1C1917" : "#78716C",
+                      boxShadow: previewMode ? "0 1px 2px rgba(0,0,0,.06)" : "none",
+                    }}>{t.preview}</button>
+                  </div>
+                </div>
+
+                {/* Body: Edit or Preview */}
+                {!previewMode ? (
+                  <div
+                    className={`drop-zone ${dragOver ? "active" : ""}`}
+                    onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                    onDragLeave={() => setDragOver(false)}
+                    onDrop={handleDrop}
+                    style={{ borderStyle: dragOver ? "dashed" : "solid", borderColor: dragOver ? "#34D399" : "#E7E5E4", borderWidth: "1.5px", borderRadius: 10, padding: 0, marginBottom: 12 }}
+                  >
+                    <textarea ref={textareaRef} placeholder={t.phBody} value={newContent.body}
+                      onChange={(e) => setNewContent({ ...newContent, body: e.target.value })}
+                      onPaste={handlePaste}
+                      rows={12}
+                      style={{ width: "100%", padding: "12px 16px", border: "none", borderRadius: 10, fontSize: 14, resize: "vertical",
+                        fontFamily: "'Outfit','Noto Sans SC'", lineHeight: 1.7, color: "#1C1917", background: "transparent", outline: "none", minHeight: 200 }} />
+                    {dragOver && (
+                      <div style={{ padding: "12px 0", color: "#059669", fontSize: 13, fontWeight: 500 }}>{t.uploadHint}</div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ border: "1.5px solid #E7E5E4", borderRadius: 10, padding: "16px 20px", marginBottom: 12, minHeight: 200, fontSize: 14, lineHeight: 1.8, color: "#44403C", fontFamily: "'Noto Sans SC','Outfit',sans-serif" }}
+                    dangerouslySetInnerHTML={{ __html: renderBody(newContent.body) || `<span style="color:#A8A29E">${t.phBody}</span>` }} />
+                )}
+
                 <input placeholder={t.phTags} value={newContent.tags} onChange={(e) => setNewContent({ ...newContent, tags: e.target.value })}
-                  style={{ width: "100%", padding: "12px 16px", borderRadius: 10, border: "1.5px solid #E7E5E4", fontSize: 13, marginBottom: 20, fontFamily: "'Outfit', 'Noto Sans SC'", color: "#57534E" }} />
+                  style={{ width: "100%", padding: "12px 16px", borderRadius: 10, border: "1.5px solid #E7E5E4", fontSize: 13, marginBottom: 20, fontFamily: "'Outfit','Noto Sans SC'", color: "#57534E" }} />
 
                 <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-                  <button onClick={() => setAddMode(false)} className="btn" style={{ padding: "9px 20px", borderRadius: 10, border: "1.5px solid #E7E5E4", background: "#fff", fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: "'Outfit', 'Noto Sans SC'", color: "#57534E" }}>{t.cancel}</button>
-                  <button onClick={handleAddContent} className="btn" style={{ padding: "9px 24px", borderRadius: 10, border: "none", background: "#1C1917", color: "#fff", fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: "'Outfit', 'Noto Sans SC'" }}>{t.submit}</button>
+                  <button onClick={() => { setAddMode(false); setPreviewMode(false); }} className="btn" style={{ padding: "9px 20px", borderRadius: 10, border: "1.5px solid #E7E5E4", background: "#fff", fontSize: 13, fontWeight: 500, cursor: "pointer", color: "#57534E" }}>{t.cancel}</button>
+                  <button onClick={handleAddContent} className="btn" style={{ padding: "9px 24px", borderRadius: 10, border: "none", background: "#1C1917", color: "#fff", fontSize: 13, fontWeight: 500, cursor: "pointer" }}>{t.submit}</button>
                 </div>
               </div>
             </div>
@@ -350,22 +440,15 @@ export default function App() {
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-                            <span className="chip" style={{ background: st.bg, color: st.color }}>
-                              <span style={{ width: 5, height: 5, borderRadius: "50%", background: st.dot }} />
-                              {(statusStyle.pending === st ? t.statusPending : statusStyle.approved === st ? t.statusApproved : t.statusRejected)}
-                            </span>
-                            <span className="chip" style={{ background: "#F5F4F0", color: "#57534E" }}>
-                              {item.content_type === "blog" ? t.typeBlog : t.typeWechat}
-                            </span>
+                            <span className="chip" style={{ background: st.bg, color: st.color }}><span style={{ width: 5, height: 5, borderRadius: "50%", background: st.dot }} />{statusStyle.pending === st ? t.statusPending : statusStyle.approved === st ? t.statusApproved : t.statusRejected}</span>
+                            <span className="chip" style={{ background: "#F5F4F0", color: "#57534E" }}>{item.content_type === "blog" ? t.typeBlog : t.typeWechat}</span>
                             <span className="chip" style={{ background: cl.bg, color: cl.color }}>{cl.label}</span>
                             {item.wp_post_id && <span className="chip" style={{ background: "#DBEAFE", color: "#1E40AF" }}>WP</span>}
                           </div>
-                          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 500, color: "#1C1917", fontFamily: "'Outfit', 'Noto Sans SC'", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title}</h3>
+                          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 500, color: "#1C1917", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title}</h3>
                           {item.bid_leads && <p style={{ margin: "4px 0 0", fontSize: 12, color: "#A8A29E" }}>{item.bid_leads.buyer} · {item.bid_leads.region}</p>}
                         </div>
-                        <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 16 }}>
-                          <span style={{ fontSize: 12, color: "#D6D3D1", fontWeight: 500, fontFamily: "'Outfit'" }}>{fmtDate(item.created_at)}</span>
-                        </div>
+                        <span style={{ fontSize: 12, color: "#D6D3D1", fontWeight: 500, fontFamily: "'Outfit'", marginLeft: 16 }}>{fmtDate(item.created_at)}</span>
                       </div>
                       {item.tags && <div style={{ display: "flex", gap: 4, marginTop: 8, flexWrap: "wrap" }}>{item.tags.split(",").map((tag) => <span key={tag} style={{ fontSize: 10, padding: "2px 8px", borderRadius: 100, background: "#F5F4F0", color: "#78716C", fontWeight: 500 }}>{tag.trim()}</span>)}</div>}
                     </div>
@@ -380,12 +463,12 @@ export default function App() {
               {leads.length === 0 ? <div style={{ textAlign: "center", padding: "80px 20px" }}><div style={{ fontSize: 40, marginBottom: 12 }}>📋</div><p style={{ fontSize: 15, color: "#78716C", fontWeight: 500 }}>{t.noLeads}</p></div>
               : leads.map((lead, i) => (
                 <div key={lead.id} className="item" style={{ background: "#fff", borderRadius: 12, padding: "14px 20px", animation: `fade-up 0.3s ease ${i * 0.04}s both` }}>
-                  <h3 style={{ margin: "0 0 6px", fontSize: 14, fontWeight: 500, color: "#1C1917", fontFamily: "'Outfit', 'Noto Sans SC'" }}>{lead.title}</h3>
+                  <h3 style={{ margin: "0 0 6px", fontSize: 14, fontWeight: 500, color: "#1C1917" }}>{lead.title}</h3>
                   <div style={{ display: "flex", gap: 12, fontSize: 12, color: "#A8A29E", flexWrap: "wrap" }}>
-                    {lead.buyer && <span style={{ display: "flex", alignItems: "center", gap: 4 }}><span style={{ color: "#D6D3D1" }}>●</span> {t.buyer}: {lead.buyer}</span>}
-                    {lead.region && <span style={{ display: "flex", alignItems: "center", gap: 4 }}><span style={{ color: "#D6D3D1" }}>●</span> {t.region}: {lead.region}</span>}
-                    {lead.budget && <span style={{ display: "flex", alignItems: "center", gap: 4 }}><span style={{ color: "#D6D3D1" }}>●</span> {t.budget}: {lead.budget}{t.wan}</span>}
-                    {lead.deadline && <span style={{ display: "flex", alignItems: "center", gap: 4 }}><span style={{ color: "#D6D3D1" }}>●</span> {t.deadline}: {lead.deadline}</span>}
+                    {lead.buyer && <span><span style={{ color: "#D6D3D1" }}>●</span> {t.buyer}: {lead.buyer}</span>}
+                    {lead.region && <span><span style={{ color: "#D6D3D1" }}>●</span> {t.region}: {lead.region}</span>}
+                    {lead.budget && <span><span style={{ color: "#D6D3D1" }}>●</span> {t.budget}: {lead.budget}{t.wan}</span>}
+                    {lead.deadline && <span><span style={{ color: "#D6D3D1" }}>●</span> {t.deadline}: {lead.deadline}</span>}
                   </div>
                 </div>
               ))}
@@ -394,50 +477,38 @@ export default function App() {
         </main>
       </div>
 
-      {/* Detail slide panel */}
+      {/* Detail panel */}
       {selected && (
         <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", justifyContent: "flex-end" }}>
-          <div style={{ flex: 1, background: "rgba(0,0,0,0.3)", backdropFilter: "blur(2px)" }} onClick={() => { setSelected(null); setReviewNote(""); }} />
-          <div style={{ width: 520, maxWidth: "92vw", background: "#fff", overflowY: "auto", padding: 32, animation: "slide-in 0.25s ease", boxShadow: "-8px 0 32px rgba(0,0,0,0.08)", fontFamily: "'Outfit', 'Noto Sans SC', sans-serif" }}>
+          <div style={{ flex: 1, background: "rgba(0,0,0,.3)", backdropFilter: "blur(2px)" }} onClick={() => { setSelected(null); setReviewNote(""); }} />
+          <div style={{ width: 520, maxWidth: "92vw", background: "#fff", overflowY: "auto", padding: 32, animation: "slide-in 0.25s ease", boxShadow: "-8px 0 32px rgba(0,0,0,.08)", fontFamily: "'Outfit','Noto Sans SC',sans-serif" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
               <h2 style={{ margin: 0, fontSize: 17, fontWeight: 600, color: "#1C1917" }}>{t.detailTitle}</h2>
               <button onClick={() => { setSelected(null); setReviewNote(""); }} style={{ border: "none", background: "#F5F4F0", width: 32, height: 32, borderRadius: 8, cursor: "pointer", fontSize: 16, color: "#78716C", display: "flex", alignItems: "center", justifyContent: "center" }}>✕</button>
             </div>
-
             <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
               {(() => { const st = statusStyle[selected.review_status] || statusStyle.pending; return <span className="chip" style={{ background: st.bg, color: st.color }}><span style={{ width: 5, height: 5, borderRadius: "50%", background: st.dot }} />{statusStyle.pending === st ? t.statusPending : statusStyle.approved === st ? t.statusApproved : t.statusRejected}</span>; })()}
               <span className="chip" style={{ background: "#F5F4F0", color: "#57534E" }}>{selected.content_type === "blog" ? t.typeBlog : t.typeWechat}</span>
               {(() => { const cl = langStyle[selected.lang] || langStyle.zh; return <span className="chip" style={{ background: cl.bg, color: cl.color }}>{cl.label}</span>; })()}
             </div>
-
             <h3 style={{ margin: "0 0 20px", fontSize: 18, fontWeight: 600, lineHeight: 1.5, color: "#1C1917" }}>{selected.title}</h3>
-
             {selected.content_type === "wechat" && (
-              <button onClick={() => copyToClipboard(selected.body)} className="btn" style={{ padding: "7px 14px", borderRadius: 8, border: "1.5px solid #E7E5E4", background: "#fff", fontSize: 12, fontWeight: 500, cursor: "pointer", marginBottom: 16, display: "flex", alignItems: "center", gap: 6, fontFamily: "'Outfit', 'Noto Sans SC'", color: "#57534E" }}>
+              <button onClick={() => copyToClipboard(selected.body)} className="btn" style={{ padding: "7px 14px", borderRadius: 8, border: "1.5px solid #E7E5E4", background: "#fff", fontSize: 12, fontWeight: 500, cursor: "pointer", marginBottom: 16, display: "flex", alignItems: "center", gap: 6, color: "#57534E" }}>
                 <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
                 {t.copyBody}
               </button>
             )}
-
-            <div style={{ background: "#FAFAF8", borderRadius: 12, border: "1px solid #ECEAE3", padding: "20px 24px", marginBottom: 24, fontSize: 14, lineHeight: 1.9, color: "#44403C", whiteSpace: "pre-wrap", fontFamily: "'Noto Sans SC', 'Outfit', sans-serif" }}>
-              {selected.body}
-            </div>
+            <div style={{ background: "#FAFAF8", borderRadius: 12, border: "1px solid #ECEAE3", padding: "20px 24px", marginBottom: 24, fontSize: 14, lineHeight: 1.9, color: "#44403C", fontFamily: "'Noto Sans SC','Outfit',sans-serif" }}
+              dangerouslySetInnerHTML={{ __html: renderBody(selected.body) }} />
 
             {selected.review_status === "pending" && (
               <div style={{ borderTop: "1px solid #F5F4F0", paddingTop: 20 }}>
                 <label style={{ fontSize: 11, fontWeight: 600, color: "#A8A29E", textTransform: "uppercase", letterSpacing: 0.5, display: "block", marginBottom: 8 }}>{t.reviewNote}</label>
                 <textarea value={reviewNote} onChange={(e) => setReviewNote(e.target.value)} placeholder={t.phNote} rows={3}
-                  style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1.5px solid #E7E5E4", fontSize: 13, marginBottom: 16, resize: "vertical", fontFamily: "'Outfit', 'Noto Sans SC'", color: "#44403C", lineHeight: 1.6 }} />
+                  style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1.5px solid #E7E5E4", fontSize: 13, marginBottom: 16, resize: "vertical", fontFamily: "'Outfit','Noto Sans SC'", color: "#44403C", lineHeight: 1.6 }} />
                 <div style={{ display: "flex", gap: 10 }}>
-                  <button onClick={() => handleApprove(selected)} disabled={publishing} className="btn" style={{
-                    padding: "10px 20px", borderRadius: 10, border: "none", background: "#059669", color: "#fff",
-                    fontSize: 13, fontWeight: 500, cursor: publishing ? "wait" : "pointer", opacity: publishing ? 0.7 : 1,
-                    fontFamily: "'Outfit', 'Noto Sans SC'",
-                  }}>{publishing ? t.publishing : selected.content_type === "blog" ? t.approveWP : t.approve}</button>
-                  <button onClick={() => handleReject(selected)} className="btn" style={{
-                    padding: "10px 20px", borderRadius: 10, border: "1.5px solid #FECACA", background: "#FEF2F2",
-                    color: "#B91C1C", fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: "'Outfit', 'Noto Sans SC'",
-                  }}>{t.reject}</button>
+                  <button onClick={() => handleApprove(selected)} disabled={publishing} className="btn" style={{ padding: "10px 20px", borderRadius: 10, border: "none", background: "#059669", color: "#fff", fontSize: 13, fontWeight: 500, cursor: publishing ? "wait" : "pointer", opacity: publishing ? 0.7 : 1 }}>{publishing ? t.publishing : selected.content_type === "blog" ? t.approveWP : t.approve}</button>
+                  <button onClick={() => handleReject(selected)} className="btn" style={{ padding: "10px 20px", borderRadius: 10, border: "1.5px solid #FECACA", background: "#FEF2F2", color: "#B91C1C", fontSize: 13, fontWeight: 500, cursor: "pointer" }}>{t.reject}</button>
                 </div>
               </div>
             )}
