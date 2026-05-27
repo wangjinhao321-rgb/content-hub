@@ -29,6 +29,9 @@ const i18n = {
     statusLabel: "状态", langLabel: "语言",
     uploadImg: "插入图片", uploading: "上传中...", uploadHint: "点击或拖拽图片到此处", uploadSuccess: "图片已插入",
     preview: "预览", edit: "编辑",
+    ratingTitle: "评价", ratingSub: "为这篇内容打分并留下评价", phAuthor: "你的名字", phComment: "写一句评价...",
+    submitComment: "提交评价", noComments: "暂无评价", avgRating: "平均", reviews: "条评价",
+    commentSuccess: "评价已提交", commentFail: "提交失败", authorRequired: "请填写名字",
   },
   en: {
     siteTitle: "Content Hub", siteDesc: "Temperature Logger · Bid Content Management",
@@ -51,13 +54,16 @@ const i18n = {
     statusLabel: "Status", langLabel: "Language",
     uploadImg: "Insert Image", uploading: "Uploading...", uploadHint: "Click or drag image here", uploadSuccess: "Image inserted",
     preview: "Preview", edit: "Edit",
+    ratingTitle: "Reviews", ratingSub: "Rate and review this content", phAuthor: "Your name", phComment: "Write a short review...",
+    submitComment: "Submit Review", noComments: "No reviews yet", avgRating: "Average", reviews: "reviews",
+    commentSuccess: "Review submitted", commentFail: "Submit failed", authorRequired: "Name is required",
   },
 };
 
 async function supaFetch(path, options = {}) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     ...options, headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json",
-      Prefer: options.method === "PATCH" ? "return=representation" : "return=minimal", ...options.headers },
+      Prefer: options.method === "PATCH" ? "return=representation" : (options.method === "POST" ? "return=representation" : "return=minimal"), ...options.headers },
   });
   if (!res.ok) throw new Error(`${res.status}`);
   const text = await res.text();
@@ -68,13 +74,7 @@ async function uploadImage(file) {
   const ext = file.name.split(".").pop();
   const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
   const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${STORAGE_BUCKET}/${fileName}`, {
-    method: "POST",
-    headers: {
-      apikey: SUPABASE_KEY,
-      Authorization: `Bearer ${SUPABASE_KEY}`,
-      "Content-Type": file.type,
-    },
-    body: file,
+    method: "POST", headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": file.type }, body: file,
   });
   if (!res.ok) throw new Error("Upload failed");
   return `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${fileName}`;
@@ -90,7 +90,6 @@ async function publishToWordPress(title, body) {
   return await res.json();
 }
 
-// Render markdown with images
 function renderBody(text) {
   if (!text) return "";
   return text
@@ -99,9 +98,30 @@ function renderBody(text) {
     .replace(/^# (.+)$/gm, '<h1 style="font-size:18px;font-weight:600;margin:24px 0 12px;color:#1C1917">$1</h1>')
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
     .replace(/\*(.+?)\*/g, "<em>$1</em>")
-    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" style="max-width:100%;border-radius:8px;margin:12px 0;" />')
+    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" style="max-width:100%;border-radius:8px;margin:12px 0" />')
     .replace(/\n\n/g, '<div style="height:12px"></div>')
     .replace(/\n/g, "<br/>");
+}
+
+// Star rating component
+function StarRating({ value, onChange, size = 20, readonly = false }) {
+  const [hover, setHover] = useState(0);
+  return (
+    <div style={{ display: "flex", gap: 2 }}>
+      {[1,2,3,4,5].map((star) => (
+        <svg key={star} width={size} height={size} viewBox="0 0 24 24"
+          style={{ cursor: readonly ? "default" : "pointer", transition: "transform 0.1s", transform: !readonly && hover === star ? "scale(1.2)" : "scale(1)" }}
+          onClick={() => !readonly && onChange?.(star)}
+          onMouseEnter={() => !readonly && setHover(star)}
+          onMouseLeave={() => !readonly && setHover(0)}
+          fill={(hover || value) >= star ? "#FACC15" : "none"}
+          stroke={(hover || value) >= star ? "#FACC15" : "#D6D3D1"}
+          strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+        </svg>
+      ))}
+    </div>
+  );
 }
 
 export default function App() {
@@ -123,6 +143,13 @@ export default function App() {
   const [uploading, setUploading] = useState(false);
   const [previewMode, setPreviewMode] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  // Comments state
+  const [comments, setComments] = useState([]);
+  const [newRating, setNewRating] = useState(0);
+  const [newAuthor, setNewAuthor] = useState("");
+  const [newComment, setNewComment] = useState("");
+  const [submittingComment, setSubmittingComment] = useState(false);
+
   const fileInputRef = useRef(null);
   const textareaRef = useRef(null);
 
@@ -144,8 +171,16 @@ export default function App() {
     catch { showToast(t.toastLeadFail, "error"); }
   }, []);
 
+  const fetchComments = useCallback(async (contentId) => {
+    try {
+      const data = await supaFetch(`comments?content_id=eq.${contentId}&order=created_at.desc`);
+      setComments(data || []);
+    } catch { setComments([]); }
+  }, []);
+
   useEffect(() => { fetchContents(); }, [fetchContents]);
   useEffect(() => { if (tab === "leads") fetchLeads(); }, [tab, fetchLeads]);
+  useEffect(() => { if (selected) { fetchComments(selected.id); setNewRating(0); setNewComment(""); } }, [selected]);
 
   const handleApprove = async (item) => {
     setPublishing(true);
@@ -175,6 +210,21 @@ export default function App() {
     } catch (e) { showToast(t.toastAddFail, "error"); }
   };
 
+  const handleSubmitComment = async () => {
+    if (!newAuthor.trim()) { showToast(t.authorRequired, "error"); return; }
+    if (newRating === 0) { showToast(lang === "zh" ? "请选择评分" : "Please select a rating", "error"); return; }
+    setSubmittingComment(true);
+    try {
+      await supaFetch("comments", { method: "POST", body: JSON.stringify({
+        content_id: selected.id, author: newAuthor.trim(), rating: newRating, comment: newComment.trim() || null,
+      })});
+      showToast(t.commentSuccess);
+      setNewRating(0); setNewComment("");
+      fetchComments(selected.id);
+    } catch (e) { showToast(t.commentFail, "error"); }
+    setSubmittingComment(false);
+  };
+
   const handleImageUpload = async (file) => {
     if (!file || !file.type.startsWith("image/")) return;
     setUploading(true);
@@ -186,8 +236,7 @@ export default function App() {
         const start = ta.selectionStart;
         const before = newContent.body.slice(0, start);
         const after = newContent.body.slice(ta.selectionEnd);
-        const newBody = before + (before && !before.endsWith("\n") ? "\n" : "") + md + "\n" + after;
-        setNewContent({ ...newContent, body: newBody });
+        setNewContent({ ...newContent, body: before + (before && !before.endsWith("\n") ? "\n" : "") + md + "\n" + after });
       } else {
         setNewContent({ ...newContent, body: newContent.body + "\n" + md + "\n" });
       }
@@ -198,14 +247,21 @@ export default function App() {
 
   const handleDrop = (e) => { e.preventDefault(); setDragOver(false); const file = e.dataTransfer.files[0]; if (file) handleImageUpload(file); };
   const handlePaste = (e) => { const items = e.clipboardData?.items; if (!items) return; for (const item of items) { if (item.type.startsWith("image/")) { e.preventDefault(); handleImageUpload(item.getAsFile()); break; } } };
-
   const copyToClipboard = (txt) => { navigator.clipboard.writeText(txt).then(() => showToast(t.toastCopied)); };
   const fmtDate = (d) => { const dt = new Date(d); return `${dt.getMonth()+1}/${dt.getDate()}`; };
+  const fmtDateTime = (d) => { const dt = new Date(d); return `${dt.getMonth()+1}/${dt.getDate()} ${dt.getHours()}:${String(dt.getMinutes()).padStart(2,"0")}`; };
 
   const statusStyle = { pending: { bg: "#FFF8EB", color: "#A16207", dot: "#FACC15" }, approved: { bg: "#ECFDF5", color: "#047857", dot: "#34D399" }, rejected: { bg: "#FEF2F2", color: "#B91C1C", dot: "#F87171" } };
   const langStyle = { zh: { label: "中", bg: "#FEF3C7", color: "#92400E" }, en: { label: "EN", bg: "#DBEAFE", color: "#1E40AF" }, bi: { label: "BI", bg: "#EDE9FE", color: "#5B21B6" } };
   const pendingCount = contents.filter(c => c.review_status === "pending").length;
   const approvedCount = contents.filter(c => c.review_status === "approved").length;
+
+  // Calculate average rating for a content item
+  const getAvgRating = (contentId) => {
+    const cc = comments.filter(c => c.content_id === contentId);
+    if (cc.length === 0) return null;
+    return (cc.reduce((sum, c) => sum + c.rating, 0) / cc.length).toFixed(1);
+  };
 
   return (
     <div style={{ minHeight: "100vh", background: "#F8F7F4" }}>
@@ -220,8 +276,6 @@ export default function App() {
         .btn{transition:all .15s ease}.btn:hover{transform:translateY(-1px);box-shadow:0 2px 8px rgba(0,0,0,.08)}.btn:active{transform:translateY(0)}
         textarea:focus,input:focus{outline:none;border-color:#A3A096!important}
         .chip{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:100px;font-size:11px;font-weight:500;letter-spacing:.02em;white-space:nowrap}
-        .drop-zone{border:2px dashed #D6D3C8;border-radius:10px;padding:16px;text-align:center;cursor:pointer;transition:all .15s ease}
-        .drop-zone:hover,.drop-zone.active{border-color:#34D399;background:#ECFDF5}
       `}</style>
 
       {toast && (
@@ -242,7 +296,7 @@ export default function App() {
               <div style={{ width: 32, height: 32, borderRadius: 8, background: "linear-gradient(135deg,#34D399,#059669)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 700, fontFamily: "'Outfit'" }}>T</div>
               <div>
                 <div style={{ fontSize: 15, fontWeight: 600, fontFamily: "'Outfit',sans-serif", letterSpacing: -0.3 }}>{t.siteTitle}</div>
-                <div style={{ fontSize: 10, color: "#A8A29E", fontFamily: "'Outfit','Noto Sans SC'", letterSpacing: 0.3 }}>{t.siteDesc}</div>
+                <div style={{ fontSize: 10, color: "#A8A29E", fontFamily: "'Outfit','Noto Sans SC'" }}>{t.siteDesc}</div>
               </div>
             </div>
           </div>
@@ -284,8 +338,7 @@ export default function App() {
             {tab === "contents" && (
               <button className="btn" onClick={() => { setAddMode(true); setPreviewMode(false); }} style={{
                 padding: "9px 20px", borderRadius: 10, border: "none", cursor: "pointer",
-                background: "#1C1917", color: "#fff", fontSize: 13, fontWeight: 500,
-                display: "flex", alignItems: "center", gap: 6,
+                background: "#1C1917", color: "#fff", fontSize: 13, fontWeight: 500, display: "flex", alignItems: "center", gap: 6,
               }}>
                 <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
                 {t.addContent}
@@ -302,8 +355,8 @@ export default function App() {
                   {[{ key: "all", label: t.filterAll }, { key: "pending", label: t.filterPending }, { key: "approved", label: t.filterApproved }, { key: "rejected", label: t.filterRejected }].map((f) => (
                     <button key={f.key} onClick={() => setFilter(f.key)} style={{
                       padding: "5px 12px", border: "none", borderRadius: 6, fontSize: 12, fontWeight: 500, cursor: "pointer",
-                      fontFamily: "'Outfit','Noto Sans SC'", background: filter === f.key ? "#fff" : "transparent",
-                      color: filter === f.key ? "#1C1917" : "#78716C", boxShadow: filter === f.key ? "0 1px 3px rgba(0,0,0,.06)" : "none",
+                      background: filter === f.key ? "#fff" : "transparent", color: filter === f.key ? "#1C1917" : "#78716C",
+                      boxShadow: filter === f.key ? "0 1px 3px rgba(0,0,0,.06)" : "none",
                     }}>{f.label}</button>
                   ))}
                 </div>
@@ -314,8 +367,8 @@ export default function App() {
                   {[{ key: "all", label: t.langAll }, { key: "zh", label: t.langZh }, { key: "en", label: t.langEn }, { key: "bi", label: t.langBi }].map((f) => (
                     <button key={f.key} onClick={() => setLangFilter(f.key)} style={{
                       padding: "5px 12px", border: "none", borderRadius: 6, fontSize: 12, fontWeight: 500, cursor: "pointer",
-                      fontFamily: "'Outfit','Noto Sans SC'", background: langFilter === f.key ? "#fff" : "transparent",
-                      color: langFilter === f.key ? "#1C1917" : "#78716C", boxShadow: langFilter === f.key ? "0 1px 3px rgba(0,0,0,.06)" : "none",
+                      background: langFilter === f.key ? "#fff" : "transparent", color: langFilter === f.key ? "#1C1917" : "#78716C",
+                      boxShadow: langFilter === f.key ? "0 1px 3px rgba(0,0,0,.06)" : "none",
                     }}>{f.label}</button>
                   ))}
                 </div>
@@ -332,8 +385,6 @@ export default function App() {
                   <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>{t.addTitle}</h2>
                   <button onClick={() => { setAddMode(false); setPreviewMode(false); }} style={{ border: "none", background: "#F5F4F0", width: 32, height: 32, borderRadius: 8, cursor: "pointer", fontSize: 16, color: "#78716C", display: "flex", alignItems: "center", justifyContent: "center" }}>✕</button>
                 </div>
-
-                {/* Type + Lang */}
                 <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
                   <div style={{ flex: 1 }}>
                     <label style={{ fontSize: 11, fontWeight: 600, color: "#A8A29E", textTransform: "uppercase", letterSpacing: 0.5, display: "block", marginBottom: 6 }}>{t.contentType}</label>
@@ -342,8 +393,7 @@ export default function App() {
                         <button key={tp.k} onClick={() => setNewContent({ ...newContent, content_type: tp.k })} className="btn" style={{
                           padding: "7px 16px", borderRadius: 8, fontSize: 13, fontWeight: 500, cursor: "pointer",
                           border: newContent.content_type === tp.k ? "1.5px solid #1C1917" : "1.5px solid #E7E5E4",
-                          background: newContent.content_type === tp.k ? "#1C1917" : "#fff",
-                          color: newContent.content_type === tp.k ? "#fff" : "#57534E",
+                          background: newContent.content_type === tp.k ? "#1C1917" : "#fff", color: newContent.content_type === tp.k ? "#fff" : "#57534E",
                         }}>{tp.l}</button>
                       ))}
                     </div>
@@ -361,63 +411,37 @@ export default function App() {
                     </div>
                   </div>
                 </div>
-
                 <input placeholder={t.phTitle} value={newContent.title} onChange={(e) => setNewContent({ ...newContent, title: e.target.value })}
                   style={{ width: "100%", padding: "12px 16px", borderRadius: 10, border: "1.5px solid #E7E5E4", fontSize: 15, fontWeight: 500, marginBottom: 12, fontFamily: "'Outfit','Noto Sans SC'", color: "#1C1917" }} />
-
-                {/* Toolbar */}
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                   <div style={{ display: "flex", gap: 4 }}>
                     <input type="file" ref={fileInputRef} accept="image/*" style={{ display: "none" }} onChange={(e) => { if (e.target.files[0]) handleImageUpload(e.target.files[0]); e.target.value = ""; }} />
                     <button onClick={() => fileInputRef.current?.click()} disabled={uploading} className="btn" style={{
                       padding: "5px 12px", borderRadius: 6, border: "1px solid #E7E5E4", background: "#fff", fontSize: 12, fontWeight: 500, cursor: uploading ? "wait" : "pointer",
-                      display: "flex", alignItems: "center", gap: 5, color: "#57534E", fontFamily: "'Outfit','Noto Sans SC'",
+                      display: "flex", alignItems: "center", gap: 5, color: "#57534E",
                     }}>
                       <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
                       {uploading ? t.uploading : t.uploadImg}
                     </button>
                   </div>
                   <div style={{ display: "flex", background: "#ECEAE3", borderRadius: 6, padding: 2 }}>
-                    <button onClick={() => setPreviewMode(false)} style={{
-                      padding: "4px 12px", border: "none", borderRadius: 4, fontSize: 11, fontWeight: 500, cursor: "pointer",
-                      background: !previewMode ? "#fff" : "transparent", color: !previewMode ? "#1C1917" : "#78716C",
-                      boxShadow: !previewMode ? "0 1px 2px rgba(0,0,0,.06)" : "none",
-                    }}>{t.edit}</button>
-                    <button onClick={() => setPreviewMode(true)} style={{
-                      padding: "4px 12px", border: "none", borderRadius: 4, fontSize: 11, fontWeight: 500, cursor: "pointer",
-                      background: previewMode ? "#fff" : "transparent", color: previewMode ? "#1C1917" : "#78716C",
-                      boxShadow: previewMode ? "0 1px 2px rgba(0,0,0,.06)" : "none",
-                    }}>{t.preview}</button>
+                    <button onClick={() => setPreviewMode(false)} style={{ padding: "4px 12px", border: "none", borderRadius: 4, fontSize: 11, fontWeight: 500, cursor: "pointer", background: !previewMode ? "#fff" : "transparent", color: !previewMode ? "#1C1917" : "#78716C", boxShadow: !previewMode ? "0 1px 2px rgba(0,0,0,.06)" : "none" }}>{t.edit}</button>
+                    <button onClick={() => setPreviewMode(true)} style={{ padding: "4px 12px", border: "none", borderRadius: 4, fontSize: 11, fontWeight: 500, cursor: "pointer", background: previewMode ? "#fff" : "transparent", color: previewMode ? "#1C1917" : "#78716C", boxShadow: previewMode ? "0 1px 2px rgba(0,0,0,.06)" : "none" }}>{t.preview}</button>
                   </div>
                 </div>
-
-                {/* Body: Edit or Preview */}
                 {!previewMode ? (
-                  <div
-                    className={`drop-zone ${dragOver ? "active" : ""}`}
-                    onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-                    onDragLeave={() => setDragOver(false)}
-                    onDrop={handleDrop}
-                    style={{ borderStyle: dragOver ? "dashed" : "solid", borderColor: dragOver ? "#34D399" : "#E7E5E4", borderWidth: "1.5px", borderRadius: 10, padding: 0, marginBottom: 12 }}
-                  >
+                  <div onDragOver={(e) => { e.preventDefault(); setDragOver(true); }} onDragLeave={() => setDragOver(false)} onDrop={handleDrop}
+                    style={{ border: `1.5px ${dragOver ? "dashed" : "solid"} ${dragOver ? "#34D399" : "#E7E5E4"}`, borderRadius: 10, marginBottom: 12, background: dragOver ? "#ECFDF5" : "transparent" }}>
                     <textarea ref={textareaRef} placeholder={t.phBody} value={newContent.body}
-                      onChange={(e) => setNewContent({ ...newContent, body: e.target.value })}
-                      onPaste={handlePaste}
-                      rows={12}
-                      style={{ width: "100%", padding: "12px 16px", border: "none", borderRadius: 10, fontSize: 14, resize: "vertical",
-                        fontFamily: "'Outfit','Noto Sans SC'", lineHeight: 1.7, color: "#1C1917", background: "transparent", outline: "none", minHeight: 200 }} />
-                    {dragOver && (
-                      <div style={{ padding: "12px 0", color: "#059669", fontSize: 13, fontWeight: 500 }}>{t.uploadHint}</div>
-                    )}
+                      onChange={(e) => setNewContent({ ...newContent, body: e.target.value })} onPaste={handlePaste} rows={12}
+                      style={{ width: "100%", padding: "12px 16px", border: "none", borderRadius: 10, fontSize: 14, resize: "vertical", fontFamily: "'Outfit','Noto Sans SC'", lineHeight: 1.7, color: "#1C1917", background: "transparent", outline: "none", minHeight: 200 }} />
                   </div>
                 ) : (
-                  <div style={{ border: "1.5px solid #E7E5E4", borderRadius: 10, padding: "16px 20px", marginBottom: 12, minHeight: 200, fontSize: 14, lineHeight: 1.8, color: "#44403C", fontFamily: "'Noto Sans SC','Outfit',sans-serif" }}
+                  <div style={{ border: "1.5px solid #E7E5E4", borderRadius: 10, padding: "16px 20px", marginBottom: 12, minHeight: 200, fontSize: 14, lineHeight: 1.8, color: "#44403C" }}
                     dangerouslySetInnerHTML={{ __html: renderBody(newContent.body) || `<span style="color:#A8A29E">${t.phBody}</span>` }} />
                 )}
-
                 <input placeholder={t.phTags} value={newContent.tags} onChange={(e) => setNewContent({ ...newContent, tags: e.target.value })}
                   style={{ width: "100%", padding: "12px 16px", borderRadius: 10, border: "1.5px solid #E7E5E4", fontSize: 13, marginBottom: 20, fontFamily: "'Outfit','Noto Sans SC'", color: "#57534E" }} />
-
                 <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
                   <button onClick={() => { setAddMode(false); setPreviewMode(false); }} className="btn" style={{ padding: "9px 20px", borderRadius: 10, border: "1.5px solid #E7E5E4", background: "#fff", fontSize: 13, fontWeight: 500, cursor: "pointer", color: "#57534E" }}>{t.cancel}</button>
                   <button onClick={handleAddContent} className="btn" style={{ padding: "9px 24px", borderRadius: 10, border: "none", background: "#1C1917", color: "#fff", fontSize: 13, fontWeight: 500, cursor: "pointer" }}>{t.submit}</button>
@@ -480,11 +504,11 @@ export default function App() {
       {/* Detail panel */}
       {selected && (
         <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", justifyContent: "flex-end" }}>
-          <div style={{ flex: 1, background: "rgba(0,0,0,.3)", backdropFilter: "blur(2px)" }} onClick={() => { setSelected(null); setReviewNote(""); }} />
-          <div style={{ width: 520, maxWidth: "92vw", background: "#fff", overflowY: "auto", padding: 32, animation: "slide-in 0.25s ease", boxShadow: "-8px 0 32px rgba(0,0,0,.08)", fontFamily: "'Outfit','Noto Sans SC',sans-serif" }}>
+          <div style={{ flex: 1, background: "rgba(0,0,0,.3)", backdropFilter: "blur(2px)" }} onClick={() => { setSelected(null); setReviewNote(""); setComments([]); }} />
+          <div style={{ width: 560, maxWidth: "92vw", background: "#fff", overflowY: "auto", padding: 32, animation: "slide-in 0.25s ease", boxShadow: "-8px 0 32px rgba(0,0,0,.08)", fontFamily: "'Outfit','Noto Sans SC',sans-serif" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
               <h2 style={{ margin: 0, fontSize: 17, fontWeight: 600, color: "#1C1917" }}>{t.detailTitle}</h2>
-              <button onClick={() => { setSelected(null); setReviewNote(""); }} style={{ border: "none", background: "#F5F4F0", width: 32, height: 32, borderRadius: 8, cursor: "pointer", fontSize: 16, color: "#78716C", display: "flex", alignItems: "center", justifyContent: "center" }}>✕</button>
+              <button onClick={() => { setSelected(null); setReviewNote(""); setComments([]); }} style={{ border: "none", background: "#F5F4F0", width: 32, height: 32, borderRadius: 8, cursor: "pointer", fontSize: 16, color: "#78716C", display: "flex", alignItems: "center", justifyContent: "center" }}>✕</button>
             </div>
             <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
               {(() => { const st = statusStyle[selected.review_status] || statusStyle.pending; return <span className="chip" style={{ background: st.bg, color: st.color }}><span style={{ width: 5, height: 5, borderRadius: "50%", background: st.dot }} />{statusStyle.pending === st ? t.statusPending : statusStyle.approved === st ? t.statusApproved : t.statusRejected}</span>; })()}
@@ -498,11 +522,12 @@ export default function App() {
                 {t.copyBody}
               </button>
             )}
-            <div style={{ background: "#FAFAF8", borderRadius: 12, border: "1px solid #ECEAE3", padding: "20px 24px", marginBottom: 24, fontSize: 14, lineHeight: 1.9, color: "#44403C", fontFamily: "'Noto Sans SC','Outfit',sans-serif" }}
+            <div style={{ background: "#FAFAF8", borderRadius: 12, border: "1px solid #ECEAE3", padding: "20px 24px", marginBottom: 24, fontSize: 14, lineHeight: 1.9, color: "#44403C" }}
               dangerouslySetInnerHTML={{ __html: renderBody(selected.body) }} />
 
+            {/* Review section */}
             {selected.review_status === "pending" && (
-              <div style={{ borderTop: "1px solid #F5F4F0", paddingTop: 20 }}>
+              <div style={{ borderTop: "1px solid #F5F4F0", paddingTop: 20, marginBottom: 24 }}>
                 <label style={{ fontSize: 11, fontWeight: 600, color: "#A8A29E", textTransform: "uppercase", letterSpacing: 0.5, display: "block", marginBottom: 8 }}>{t.reviewNote}</label>
                 <textarea value={reviewNote} onChange={(e) => setReviewNote(e.target.value)} placeholder={t.phNote} rows={3}
                   style={{ width: "100%", padding: "10px 14px", borderRadius: 10, border: "1.5px solid #E7E5E4", fontSize: 13, marginBottom: 16, resize: "vertical", fontFamily: "'Outfit','Noto Sans SC'", color: "#44403C", lineHeight: 1.6 }} />
@@ -512,6 +537,64 @@ export default function App() {
                 </div>
               </div>
             )}
+
+            {/* ========== Rating & Comments Section ========== */}
+            <div style={{ borderTop: "1px solid #F5F4F0", paddingTop: 24 }}>
+              {/* Header with average */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+                <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: "#1C1917" }}>{t.ratingTitle}</h3>
+                {comments.length > 0 && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <StarRating value={Math.round(parseFloat(getAvgRating(selected.id)))} readonly size={14} />
+                    <span style={{ fontSize: 13, fontWeight: 600, color: "#1C1917" }}>{getAvgRating(selected.id)}</span>
+                    <span style={{ fontSize: 12, color: "#A8A29E" }}>({comments.length} {t.reviews})</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Submit new rating */}
+              <div style={{ background: "#FAFAF8", borderRadius: 12, border: "1px solid #ECEAE3", padding: 20, marginBottom: 20 }}>
+                <p style={{ margin: "0 0 12px", fontSize: 12, color: "#78716C" }}>{t.ratingSub}</p>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+                  <StarRating value={newRating} onChange={setNewRating} size={24} />
+                  {newRating > 0 && <span style={{ fontSize: 13, fontWeight: 600, color: "#FACC15" }}>{newRating}/5</span>}
+                </div>
+                <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                  <input placeholder={t.phAuthor} value={newAuthor} onChange={(e) => setNewAuthor(e.target.value)}
+                    style={{ width: 120, padding: "8px 12px", borderRadius: 8, border: "1.5px solid #E7E5E4", fontSize: 13, fontFamily: "'Outfit','Noto Sans SC'", color: "#1C1917" }} />
+                  <input placeholder={t.phComment} value={newComment} onChange={(e) => setNewComment(e.target.value)}
+                    style={{ flex: 1, padding: "8px 12px", borderRadius: 8, border: "1.5px solid #E7E5E4", fontSize: 13, fontFamily: "'Outfit','Noto Sans SC'", color: "#1C1917" }} />
+                </div>
+                <button onClick={handleSubmitComment} disabled={submittingComment} className="btn" style={{
+                  padding: "8px 18px", borderRadius: 8, border: "none", background: "#1C1917", color: "#fff",
+                  fontSize: 12, fontWeight: 500, cursor: submittingComment ? "wait" : "pointer", opacity: submittingComment ? 0.7 : 1,
+                }}>{t.submitComment}</button>
+              </div>
+
+              {/* Comments list */}
+              {comments.length === 0 ? (
+                <p style={{ textAlign: "center", color: "#A8A29E", fontSize: 13, padding: "12px 0" }}>{t.noComments}</p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {comments.map((c, i) => (
+                    <div key={c.id} style={{ display: "flex", gap: 12, animation: `fade-up 0.2s ease ${i * 0.05}s both` }}>
+                      {/* Avatar */}
+                      <div style={{ width: 32, height: 32, borderRadius: "50%", background: `hsl(${(c.author || "").charCodeAt(0) * 37 % 360}, 45%, 65%)`, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 13, fontWeight: 600, flexShrink: 0 }}>
+                        {(c.author || "?")[0].toUpperCase()}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+                          <span style={{ fontSize: 13, fontWeight: 600, color: "#1C1917" }}>{c.author}</span>
+                          <StarRating value={c.rating} readonly size={12} />
+                          <span style={{ fontSize: 11, color: "#D6D3D1" }}>{fmtDateTime(c.created_at)}</span>
+                        </div>
+                        {c.comment && <p style={{ margin: 0, fontSize: 13, color: "#57534E", lineHeight: 1.5 }}>{c.comment}</p>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
